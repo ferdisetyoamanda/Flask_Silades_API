@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <icon src="https://img.icons8.com/ios/452/football2.png">
+    <title>Predict Drowning</title>
+    <script
+      src="https://code.jquery.com/jquery-3.3.1.min.js"
+      integrity="sha256-FgpCb/KJQlLNfOu91ta32o/NMZxltwRo8QtmkMRdAu8="
+      crossorigin="anonymous"
+    ></script>
+</head>
+<body>
+    <div class="App">
+        <header class="App-header">
+          <p><u> Object Detection - YOLO </u></p>
+          <button name="cam" class="button" id="opencam">Video Cam</button>
+          <br/>
+          <hr class="line" />
+        </header>
+      </div>
+</body>
+</html>
+<script>
+    window.onload = () => {
+  $("#opencam").click(() => {
+    console.log("evoked openCam");
+    $.ajax({
+      url: "/stream",
+      type: "GET",
+      error: function (data) {
+        console.log("upload error", data);
+      },
+      success: function (data) {
+        console.log(data);
+      }
+    });
+  })
+};
+
+function readUrl(input) {
+  imagebox = $("#imagebox");
+  console.log(imagebox);
+  console.log("evoked readUrl");
+  if (input.files && input.files[0]) {
+    let reader = new FileReader();
+    reader.onload = function (e) {
+      console.log(e.target);
+
+      imagebox.attr("src", e.target.result);
+    };
+    reader.readAsDataURL(input.files[0]);
+  }
+}
+
+
+function openCam(e){
+  console.log("evoked openCam");
+  e.preventDefault();
+  console.log("evoked openCam");
+  console.log(e);
+}
+</script>
