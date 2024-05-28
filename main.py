@@ -26,6 +26,21 @@ import cloudinary
 from cloudinary.uploader import upload
 from cloudinary.utils import cloudinary_url
 
+import uuid
+from flask_cors import CORS
+
+app = Flask(__name__)
+CORS(app, resources={r"/auth/signin*": {"origins": "http://localhost:5173"}})
+
+@app.before_request
+def handle_preflight():
+    if request.method == 'OPTIONS':
+        response = app.response_class()
+        response.headers['Access-Control-Allow-Origin'] = 'http://localhost:5173'  # Sesuaikan dengan port React Anda
+        response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type'
+        return response
+
 # Flask Configuration.
 load_dotenv()
 app = Flask(__name__, template_folder='web')
@@ -139,7 +154,35 @@ def admin_required(f):
 			}, 500
 	return decorated_function
 
+#generete_id
+def get_next_available_id(role):
+    role_ranges = {
+        'admin': (1000, 1999),
+        'dprd': (2000, 2999),
+        'user': (3000, 3999)
+    }
+
+    if role not in role_ranges:
+        raise ValueError("Invalid role")
+
+    min_id, max_id = role_ranges[role]
+
+    # Query untuk mencari ID yang tidak terpakai dalam rentang tertentu
+    used_ids = db.session.query(User.id).filter(User.id.between(min_id, max_id)).all()
+    used_ids = {id for (id,) in used_ids}
+
+    # Mencari ID yang belum digunakan
+    for new_id in range(min_id, max_id + 1):
+        if new_id not in used_ids:
+            return new_id
+
+    # Jika tidak ada ID yang tersedia dalam rentang
+    raise ValueError("No available IDs for this role")
+
+
+
 #register user
+
 parser4SignUp = reqparse.RequestParser()
 parser4SignUp.add_argument('email', type=str, location='json', 
 	required=True, help='Email Address')
@@ -201,6 +244,7 @@ parser4Admin.add_argument('province_id', type=int, location='json',
 
 #register dprd
 parser4Dprd = reqparse.RequestParser()
+parser4Dprd.add_argument('Authorization', type=str, location='headers', required=True)
 parser4Dprd.add_argument('email', type=str, location='json',
 	required=True, help='Email Address')
 parser4Dprd.add_argument('name', type=str, location='json',
@@ -243,81 +287,83 @@ parser4Dprd.add_argument('position', type=str, location='json',
 
 @api.route('/user/auth/signup')
 class Registration(Resource):
-	@api.expect(parser4SignUp)
-	def post(self):
-		args 		= parser4SignUp.parse_args()
-		email 		= args['email']
-		name 		= args['name']
-		password 	= args['password']
-		rePassword 	= args['re_password']
-		phone_number = args['phone_number']
-		full_address = args['full_address']
-		bod = args['bod']
-		bop = args['bop']
-		rt_num = args['rt_num']
-		rw_num = args['rw_num']
-		village_id = args['village_id']
-		subdistrict_id = args['subdistrict_id']
+    @api.expect(parser4SignUp)
+    def post(self):
+        args = parser4SignUp.parse_args()
+        email = args['email']
+        name = args['name']
+        password = args['password']
+        rePassword = args['re_password']
+        phone_number = args['phone_number']
+        full_address = args['full_address']
+        bod = args['bod']
+        bop = args['bop']
+        rt_num = args['rt_num']
+        rw_num = args['rw_num']
+        village_id = args['village_id']
+        subdistrict_id = args['subdistrict_id']
 
+        if password != rePassword:
+            return {
+                'message': 'Password is not the same!'
+            }, 400  # HTTP Status Code for Bad Request.
 
-		if password != rePassword:
-			return {
-				'message': 'Password is not the same!'
-			}, 400 # HTTP Status Code for Bad Request.
-
-		user = db.session.execute(db.select(User).filter_by(email=email)).first()
-		if user:
-			return {
+        user = db.session.execute(db.select(User).filter_by(email=email)).first()
+        if user:
+            return {
                 'message': 'This email address has been used!'
-			}, 409 # HTTP Status Code for "Conflict".
-		
-		try:
-			user	= User()
-			user.email	= email
-			user.name	= name
-			user.password	= generate_password_hash(password)
-			user.verified	= False
-			user.profile	= 'https://res.cloudinary.com/dkxt6mlnh/image/upload/v1682927959/drown/images-removebg-preview_nmbyo7.png'
-			user.phone_number	= phone_number
-			user.full_address	= full_address
-			user.bod = bod
-			user.bop = bop
-			user.rt_num = rt_num
-			user.rw_num = rw_num
-			user.village_id = village_id
-			user.subdistrict_id = subdistrict_id
-			user.district_id = "1"
-			user.province_id = "1"
-			user.role = 'user'
-				
-			db.session.add(user)
-			db.session.commit()
-				
-			ids = db.session.execute(db.select(User).filter_by(email=email)).first()
-			id = ids[0]
-			payload = {
-				'user_id': id.id,
-				'email': email,
-				'aud': AUDIENCE_MOBILE,
-				'iss': ISSUER,
-				'iat': datetime.utcnow(),
-				'exp': datetime.utcnow() + timedelta(hours=2)
-			}
-			verify_token = jwt.encode(payload, SECRET_KEY, algorithm='HS256')
-			url = f"http://127.0.0.1:8081/user/auth/verify?token={verify_token}"
-			msg = Message('Email Verification', sender = os.getenv('MAIL_USERNAME'), recipients = [email])
-			msg.html = render_template('verifemail.html', name=name, url=url)
-			mail.send(msg)
+            }, 409  # HTTP Status Code for "Conflict".
 
-			return {
-				'message': 'Successful Registered! Please check your email to verify your account.'
-				}, 201 # HTTP Status Code for "Created".
+        try:
+            user_id = get_next_available_id('user')  # Get the next available user ID
 
-		except Exception as err:
-			return {
-				'message': str(err)
-			}, 500
+            user = User(
+                id=user_id,
+                email=email,
+                name=name,
+                password=generate_password_hash(password),
+                phone_number=phone_number,
+                full_address=full_address,
+                bod=bod,
+                bop=bop,
+                rt_num=rt_num,
+                rw_num=rw_num,
+                village_id=village_id,
+                subdistrict_id=subdistrict_id,
+                district_id="1",
+                province_id="1",
+                role='user',
+                verified=False,
+                profile='https://res.cloudinary.com/dkxt6mlnh/image/upload/v1682927959/drown/images-removebg-preview_nmbyo7.png'
+            )
 
+            db.session.add(user)
+            db.session.commit()
+
+            payload = {
+                'user_id': user.id,
+                'email': email,
+                'aud': AUDIENCE_MOBILE,
+                'iss': ISSUER,
+                'iat': datetime.utcnow(),
+                'exp': datetime.utcnow() + timedelta(hours=2)
+            }
+            verify_token = jwt.encode(payload, SECRET_KEY, algorithm='HS256')
+            url = f"http://127.0.0.1:8081/user/auth/verify?token={verify_token}"
+            msg = Message('Email Verification', sender=os.getenv('MAIL_USERNAME'), recipients=[email])
+            msg.html = render_template('verifemail.html', name=name, url=url)
+            mail.send(msg)
+
+            return {
+                'message': 'Successful Registered! Please check your email to verify your account.'
+            }, 201  # HTTP Status Code for "Created".
+
+        except Exception as err:
+            return {
+                'message': str(err)
+            }, 500
+
+#admin
 @api.route('/admin/auth/signup')
 class RegistrationAdmin(Resource):
 	@api.expect(parser4Admin)
@@ -396,85 +442,104 @@ class RegistrationAdmin(Resource):
 #dprd
 @api.route('/admin/auth/signup/dprd')
 class RegistrationDprd(Resource):
-	@api.expect(parser4Dprd)
-	@admin_required
-	def post(self):
-		args = parser4Dprd.parse_args()
-		email = args['email']
-		name = args['name']
-		password = args['password']
-		rePassword = args['re_password']
-		phone_number = args['phone_number']
-		full_address = args['full_address']
-		bod = args['bod']
-		bop = args['bop']
-		rt_num = args['rt_num']
-		rw_num = args['rw_num']
-		village_id = args['village_id']
-		subdistrict_id = args['subdistrict_id']
-		district_id = args['district_id']
-		province_id = args['province_id']
-		komisi = args['komisi']
-		position = args['position']
-		
+    @api.expect(parser4Dprd)
+    @admin_required
+    def post(self):
+        args = parser4Dprd.parse_args()
+        basicAuth = args['Authorization']
+        if args['Authorization'].split(' ')[0] != 'Bearer':
+            return {
+                'message': 'Authorization type is not Bearer!'
+            }, 400
+        token = basicAuth.split(' ')[1]
 
-		if password != rePassword:
-			return {
-				'message': 'Password is not the same!'
-			}, 400 # HTTP Status Code for Bad Request.
-		user = db.session.execute(db.select(User).filter_by(email=email)).first()
-		if user:
-			return {'message': 'This email address has been used!'}, 409
-		try:
-			user = User()
-			user.email = email
-			user.name = name
-			user.password = generate_password_hash(password)
-			user.verified = False
-			user.profile = 'https://res.cloudinary.com/dkxt6mlnh/image/upload/v1682927959/drown/images-removebg-preview_nmbyo7.png'
-			user.phone_number = phone_number
-			user.full_address = full_address
-			user.bod = bod
-			user.bop = bop
-			user.rt_num= rt_num
-			user.rw_num = rw_num
-			user.village_id = village_id
-			user.subdistrict_id = subdistrict_id
-			user.district_id = district_id
-			user.province_id = province_id
-			user.komisi = komisi
-			user.position = position
-			
-			user.role = 'dprd'
+        email = args['email']
+        name = args['name']
+        password = args['password']
+        rePassword = args['re_password']
+        phone_number = args['phone_number']
+        full_address = args['full_address']
+        bod = args['bod']
+        bop = args['bop']
+        rt_num = args['rt_num']
+        rw_num = args['rw_num']
+        village_id = args['village_id']
+        subdistrict_id = args['subdistrict_id']
+        district_id = args['district_id']
+        province_id = args['province_id']
+        komisi = args['komisi']
+        position = args['position']
 
-			db.session.add(user)
-			db.session.commit()
+        if password != rePassword:
+            return {
+                'message': 'Password is not the same!'
+            }, 400  # HTTP Status Code for Bad Request.
 
-			ids = db.session.execute(db.select(User).filter_by(email=email)).first()
-			id = ids[0]
-			payload = {
-				'user_id': id.id,
-				'email': email,
-				'aud': AUDIENCE_MOBILE,
-				'iss': ISSUER,
-				'iat': datetime.utcnow(),
-				'exp': datetime.utcnow() + timedelta(hours=2)
-			}
-			verify_token = jwt.encode(payload, SECRET_KEY, algorithm='HS256')
-			url = f"http://127.0.0.1:8081/user/auth/verify?token={verify_token}"
-			msg = Message('Email Verification', sender = os.getenv('MAIL_USERNAME'), recipients = [email])
-			msg.html = render_template('verifemail.html', name=name, url=url)
-			mail.send(msg)
+        user = db.session.execute(db.select(User).filter_by(email=email)).first()
+        if user:
+            return {'message': 'This email address has been used!'}, 409
 
-			return {
-				'message': 'Successful Registered! Please check your email to verify your account.'
-				}, 201 # HTTP Status Code for "Created".
-		
-		except Exception as err:
-			return {
-				'message': str(err)
-			}, 500
-		
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"], audience=AUDIENCE_MOBILE, issuer=ISSUER)
+            user = db.session.execute(db.select(User).filter_by(id=payload['user_id'])).first()
+            if user is None:
+                return {
+                    'message': 'User not found!'
+                }, 404
+            if user[0].role != 'admin':
+                return {
+                    'message': 'Access Denied!'
+                }, 403
+
+            user_id = get_next_available_id('dprd')  # Get the next available user ID
+
+            user = User()
+            user.id = user_id
+            user.email = email
+            user.name = name
+            user.password = generate_password_hash(password)
+            user.verified = False
+            user.profile = 'https://res.cloudinary.com/dkxt6mlnh/image/upload/v1682927959/drown/images-removebg-preview_nmbyo7.png'
+            user.phone_number = phone_number
+            user.full_address = full_address
+            user.bod = bod
+            user.bop = bop
+            user.rt_num = rt_num
+            user.rw_num = rw_num
+            user.village_id = village_id
+            user.subdistrict_id = subdistrict_id
+            user.district_id = district_id
+            user.province_id = province_id
+            user.komisi = komisi
+            user.position = position
+            user.role = 'dprd'
+
+            db.session.add(user)
+            db.session.commit()
+
+            id = user.id  # ID sudah ada pada objek user
+            payload = {
+                'user_id': id,
+                'email': email,
+                'aud': AUDIENCE_MOBILE,
+                'iss': ISSUER,
+                'iat': datetime.utcnow(),
+                'exp': datetime.utcnow() + timedelta(hours=2)
+            }
+            verify_token = jwt.encode(payload, SECRET_KEY, algorithm='HS256')
+            url = f"http://127.0.0.1:8081/user/auth/verify?token={verify_token}"
+            msg = Message('Email Verification', sender=os.getenv('MAIL_USERNAME'), recipients=[email])
+            msg.html = render_template('verifemail.html', name=name, url=url)
+            mail.send(msg)
+
+            return {
+                'message': 'Successful Registered! Please check your email to verify your account.'
+            }, 201  # HTTP Status Code for "Created".
+
+        except Exception as err:
+            return {
+                'message': str(err)
+            }, 500
 
 #login
 parser4SignIn = reqparse.RequestParser()
@@ -563,6 +628,13 @@ class BasicAuth(Resource):
 					'email': user.email,
 					'verified': user.verified,
 					'profile': user.profile,
+					'phone_number': user.phone_number,
+					'role': user.role,
+					'rt_num': user.rt_num,
+					'rw_num': user.rw_num,
+					'village_id': user.village_id,
+					'subdistrict_id': user.subdistrict_id,
+					'district_id': user.district_id,
 					'expired': expiration_date.strftime("%d %B %Y %H:%M:%S")
 				}, 200
 			else:
@@ -636,6 +708,12 @@ parserProfile.add_argument('Authorization', type=str, location='headers', requir
 parserProfile.add_argument('name', type=str, location='form', required=False)
 parserProfile.add_argument('email', type=str, location='form', required=False)
 parserProfile.add_argument('profile', type=FileStorage, location='files', required=False)
+parserProfile.add_argument('phone_number', type=str, location='form', required=False)
+parserProfile.add_argument('full_address', type=str, location='form', required=False)
+parserProfile.add_argument('rt_num', type=str, location='form', required=False)
+parserProfile.add_argument('rw_num', type=str, location='form', required=False)
+parserProfile.add_argument('village_id', type=int, location='form', required=False)
+parserProfile.add_argument('subdistrict_id', type=int, location='form', required=False)
 
 @api.route('/user/profile')
 class Profile(Resource):
@@ -646,6 +724,12 @@ class Profile(Resource):
 		name = args['name']
 		email = args['email']
 		profile = args['profile']
+		phone_number = args['phone_number']
+		full_address = args['full_address']
+		rt_num = args['rt_num']
+		rw_num = args['rw_num']
+		village_id = args['village_id']
+		subdistrict_id = args['subdistrict_id']
 
 		if args['Authorization'].split(' ')[0] != 'Bearer':
 			return {
@@ -678,6 +762,18 @@ class Profile(Resource):
 					user.email = email
 				if profile is not None and profile != '':
 					user.profile = image
+				if phone_number is not None and phone_number != '':
+					user.phone_number = phone_number
+				if full_address is not None and full_address != '':
+					user.full_address = full_address
+				if rt_num is not None and rt_num != '':
+					user.rt_num = rt_num
+				if rw_num is not None and rw_num != '':
+					user.rw_num = rw_num
+				if village_id is not None and village_id != '':
+					user.village_id = village_id
+				if subdistrict_id is not None and subdistrict_id != '':
+					user.subdistrict_id = subdistrict_id
 				
 				db.session.commit()
 				return {
@@ -728,7 +824,7 @@ class ForgotPassword(Resource):
 				'exp': datetime.utcnow() + timedelta(minutes=30),
 			}
 			code = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
-			url = f'http://127.0.0.1:8081//user/pagereset?code={code}'
+			url = f'http://127.0.0.1:8081/user/pagereset?code={code}'
 			msg = Message('Forgot Password', sender = os.getenv('MAIL_USERNAME'), recipients=[email])
 			msg.html = render_template('forgotpassword.html', url=url , name=user[0].name)
 			mail.send(msg)
@@ -774,7 +870,7 @@ class LupaPassword(Resource):
 				'exp': datetime.utcnow() + timedelta(minutes=30),
 			}
 			code = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
-			url = f'https://api-drown.up.railway.app/user/pagereset?code={code}'
+			url = f'http://127.0.0.1:8081/user/pagereset?code={code}'
 			msg = Message('Forgot Password', sender = os.getenv('MAIL_USERNAME'), recipients=[email])
 			msg.html = render_template('forgotpassword.html', url=url , name=user[0].name)
 			mail.send(msg)
@@ -891,7 +987,6 @@ parserLaporan.add_argument('Authorization', type=str, location='headers', requir
 parserLaporan.add_argument('title', type=str, location='form', required=True)
 parserLaporan.add_argument('description', type=str, location='form', required=True)
 parserLaporan.add_argument('image', type=FileStorage, location='files', required=False)
-parserLaporan.add_argument('location', type=str, location='form', required=True)
 parserLaporan.add_argument('latitude', type=str, location='form', required=True)
 parserLaporan.add_argument('longitude', type=str, location='form', required=True)
 parserLaporan.add_argument('status', type=str, location='form', required=False)
@@ -908,7 +1003,7 @@ parserLaporan.add_argument('type_infra', type=str, location='form', required=Tru
 parserLaporan.add_argument('prediction', type=str, location='form', required=False)
 
 
-@api.route('/user/laporan')
+@api.route('/user/laporan/post')
 class Laporan(Resource):
 	@api.expect(parserLaporan)
 	def post(self):
@@ -917,7 +1012,6 @@ class Laporan(Resource):
 		title = args['title']
 		description = args['description']
 		image = args['image']
-		location = args['location']
 		latitude = args['latitude']
 		longitude = args['longitude']
 		status = args['status']
@@ -952,14 +1046,11 @@ class Laporan(Resource):
 					return {
 						'message': str(err)
 					}, 500
-			
-			
 			laporan = Laporan()
 			laporan.user_id = user[0].id
 			laporan.title = title
 			laporan.description = description
 			laporan.image = image
-			laporan.location = location
 			laporan.latitude = latitude
 			laporan.longitude = longitude
 			laporan.status = status
@@ -991,7 +1082,7 @@ class Laporan(Resource):
 parserLaporan = reqparse.RequestParser()
 parserLaporan.add_argument('Authorization', type=str, location='headers', required=True)
 
-@api.route('/user/laporan')
+@api.route('/user/laporan/get')
 class Laporan(Resource):
 	@api.expect(parserLaporan)
 	def get(self):
@@ -1054,7 +1145,7 @@ parserLaporan = reqparse.RequestParser()
 parserLaporan.add_argument('Authorization', type=str, location='headers', required=True)
 parserLaporan.add_argument('id', type=int, location='args', required=True)
 
-@api.route('/user/laporan/id')
+@api.route('/user/laporan/get/id')
 class Laporan(Resource):
 	@api.expect(parserLaporan)
 	def get(self):
@@ -1130,7 +1221,7 @@ parserLaporan.add_argument('subdistrict_id', type=int, location='form', required
 parserLaporan.add_argument('type_infra', type=str, location='form', required=False)
 parserLaporan.add_argument('prediction', type=str, location='form', required=False)
 
-@api.route('/user/laporan')
+@api.route('/user/laporan/update')
 class Laporan(Resource):
 	@api.expect(parserLaporan)
 	def put(self):
@@ -1140,11 +1231,10 @@ class Laporan(Resource):
 		title = args['title']
 		description = args['description']
 		image = args['image']
-		video = args['video']
 		location = args['location']
 		latitude = args['latitude']
 		longitude = args['longitude']
-		status = args['status']
+
 
 		if args['Authorization'].split(' ')[0] != 'Bearer':
 			return {
@@ -1175,17 +1265,7 @@ class Laporan(Resource):
 					return {
 						'message': str(err)
 					}, 500
-			if video and allowed_file(video.filename):
-				filename = secure_filename(video.filename)
-				video.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-				try:
-					upload_result = upload(os.path.join(app.config['UPLOAD_FOLDER'], filename), **upload_options)
-					video = upload_result['secure_url']
-					os.remove(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-				except Exception as err:
-					return {
-						'message': str(err)
-					}, 500
+
 			if title is not None and title != '':
 				laporan.title = title
 			if description is not None and description != '':
@@ -1222,7 +1302,7 @@ parserLaporan = reqparse.RequestParser()
 parserLaporan.add_argument('Authorization', type=str, location='headers', required=True)
 parserLaporan.add_argument('id', type=int, location='args', required=True)
 
-@api.route('/user/laporan')
+@api.route('/user/laporan/delete')
 class Laporan(Resource):
 	@api.expect(parserLaporan)
 	def delete(self):
@@ -1269,7 +1349,7 @@ class Laporan(Resource):
 parserLaporan = reqparse.RequestParser()
 parserLaporan.add_argument('Authorization', type=str, location='headers', required=True)
 
-@api.route('/admin/laporan')
+@api.route('/admin/laporan/get')
 class Laporan(Resource):
 	@api.expect(parserLaporan)
 	def get(self):
@@ -1329,7 +1409,7 @@ parserLaporan = reqparse.RequestParser()
 parserLaporan.add_argument('Authorization', type=str, location='headers', required=True)
 parserLaporan.add_argument('id', type=int, location='args', required=True)
 
-@api.route('/admin/laporan/id')
+@api.route('/admin/laporan/get/id')
 class Laporan(Resource):
 	@api.expect(parserLaporan)
 	def get(self):
@@ -1399,7 +1479,234 @@ parserLaporan.add_argument('latitude', type=str, location='form', required=False
 parserLaporan.add_argument('longitude', type=str, location='form', required=False)
 parserLaporan.add_argument('status', type=str, location='form', required=False)
 
-@api.route('/admin/laporan')
+@api.route('/admin/laporan/update')
+class Laporan(Resource):
+	@api.expect(parserLaporan)
+	def put(self):
+		args = parserLaporan.parse_args()
+		bearerAuth = args['Authorization']
+		id = args['id']
+		title = args['title']
+		description = args['description']
+		image = args['image']
+		video = args['video']
+		location = args['location']
+		latitude = args['latitude']
+		longitude = args['longitude']
+		status = args['status']
+
+		if args['Authorization'].split(' ')[0] != 'Bearer':
+			return {
+				'message': 'Authorization type is not Bearer!'
+			}, 400
+		token = bearerAuth.split(' ')[1]
+		try:
+			payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"], audience=AUDIENCE_MOBILE, issuer=ISSUER)
+			user = db.session.execute(db.select(User).filter_by(id=payload['user_id'])).first()
+			if user is None:
+				return {
+					'message': 'User not found!'
+				}, 404
+			if user[0].role != 'admin':
+				return {
+					'message': 'You are not admin!'
+				}, 401
+			laporan = db.session.execute(db.select(Laporan).filter_by(id=id)).first()
+			if laporan is None:
+				return {
+					'message': 'Laporan not found!'
+				}, 404
+			laporan = laporan[0]
+			if image and allowed_file(image.filename):
+				filename = secure_filename(image.filename)
+				image.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+				try:
+					upload_result = upload(os.path.join(app.config['UPLOAD_FOLDER'], filename), **upload_options)
+					image = upload_result['secure_url']
+					os.remove(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+				except Exception as err:
+					return {
+						'message': str(err)
+					}, 500
+			if video and allowed_file(video.filename):
+				filename = secure_filename(video.filename)
+				video.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+				try:
+					upload_result = upload(os.path.join(app.config['UPLOAD_FOLDER'], filename), **upload_options)
+					video = upload_result['secure_url']
+					os.remove(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+				except Exception as err:
+					return {
+						'message': str(err)
+					}, 500
+			if title is not None and title != '':
+				laporan.title = title
+			if description is not None and description != '':
+				laporan.description = description
+			if image is not None and image != '':
+				laporan.image = image
+			if video is not None and video != '':
+				laporan.video = video
+			if location is not None and location != '':
+				laporan.location = location
+			if latitude is not None and latitude != '':
+				laporan.latitude = latitude
+			if longitude is not None and longitude != '':
+				laporan.longitude = longitude
+			if status is not None and status != '':
+				laporan.status = status
+			db.session.commit()
+			return {
+				'message': 'Laporan berhasil diupdate!'
+			}, 200
+		except jwt.ExpiredSignatureError:
+			return {
+				'message': 'Token is expired!'
+			}, 400
+		except jwt.InvalidTokenError:
+			return {
+				'message': 'Invalid Token!'
+			}, 400
+		except Exception as err:
+			return {
+				'message': str(err)
+			}, 500
+
+#admin get laporan kerusakan
+parserLaporan = reqparse.RequestParser()
+parserLaporan.add_argument('Authorization', type=str, location='headers', required=True)
+
+@api.route('/admin/laporan/get')
+class Laporan(Resource):
+	@api.expect(parserLaporan)
+	def get(self):
+		args = parserLaporan.parse_args()
+		bearerAuth = args['Authorization']
+		if args['Authorization'].split(' ')[0] != 'Bearer':
+			return {
+				'message': 'Authorization type is not Bearer!'
+			}, 400
+		token = bearerAuth.split(' ')[1]
+		try:
+			payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"], audience=AUDIENCE_MOBILE, issuer=ISSUER)
+			user = db.session.execute(db.select(User).filter_by(id=payload['user_id'])).first()
+			if user is None:
+				return {
+					'message': 'User not found!'
+				}, 404
+			if user[0].role != 'admin':
+				return {
+					'message': 'You are not admin!'
+				}, 401
+			laporan = db.session.execute(db.select(Laporan)).all()
+			if laporan is None:
+				return {
+					'message': 'Laporan not found!'
+				}, 404
+			laporan = laporan[0]
+			laporan = [{
+				'id': laporan.id,
+				'title': laporan.title,
+				'description': laporan.description,
+				'image': laporan.image,
+				'location': laporan.location,
+				'latitude': laporan.latitude,
+				'longitude': laporan.longitude,
+				'status': laporan.status
+			} for laporan in laporan]
+			return {
+				'message': 'Success get laporan!',
+				'data': laporan
+			}, 200
+		except jwt.ExpiredSignatureError:
+			return {
+				'message': 'Token is expired!'
+			}, 400
+		except jwt.InvalidTokenError:
+			return {
+				'message': 'Invalid Token!'
+			}, 400
+		except Exception as err:
+			return {
+				'message': str(err)
+			}, 500
+
+#admin get laporan kerusakan by id
+parserLaporan = reqparse.RequestParser()
+parserLaporan.add_argument('Authorization', type=str, location='headers', required=True)
+parserLaporan.add_argument('id', type=int, location='args', required=True)
+
+@api.route('/admin/laporan/get/id')
+class Laporan(Resource):
+	@api.expect(parserLaporan)
+	def get(self):
+		args = parserLaporan.parse_args()
+		bearerAuth = args['Authorization']
+		id = args['id']
+		if args['Authorization'].split(' ')[0] != 'Bearer':
+			return {
+				'message': 'Authorization type is not Bearer!'
+			}, 400
+		token = bearerAuth.split(' ')[1]
+		try:
+			payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"], audience=AUDIENCE_MOBILE, issuer=ISSUER)
+			user = db.session.execute(db.select(User).filter_by(id=payload['user_id'])).first()
+			if user is None:
+				return {
+					'message': 'User not found!'
+				}, 404
+			if user[0].role != 'admin':
+				return {
+					'message': 'You are not admin!'
+				}, 401
+			laporan = db.session.execute(db.select(Laporan).filter_by(id=id)).first()
+			if laporan is None:
+				return {
+					'message': 'Laporan not found!'
+				}, 404
+			laporan = laporan[0]
+			laporan = {
+				'id': laporan.id,
+				'title': laporan.title,
+				'description': laporan.description,
+				'image': laporan.image,
+				'video': laporan.video,
+				'location': laporan.location,
+				'latitude': laporan.latitude,
+				'longitude': laporan.longitude,
+				'status': laporan.status
+			}
+			return {
+				'message': 'Success get laporan!',
+				'data': laporan
+			}, 200
+		except jwt.ExpiredSignatureError:
+			return {
+				'message': 'Token is expired!'
+			}, 400
+		except jwt.InvalidTokenError:
+			return {
+				'message': 'Invalid Token!'
+			}, 400
+		except Exception as err:
+			return {
+				'message': str(err)
+			}, 500
+
+#admin update laporan kerusakan
+parserLaporan = reqparse.RequestParser()
+parserLaporan.add_argument('Authorization', type=str, location='headers', required=True)
+parserLaporan.add_argument('id', type=int, location='form', required=True)
+parserLaporan.add_argument('title', type=str, location='form', required=False)
+parserLaporan.add_argument('description', type=str, location='form', required=False)
+parserLaporan.add_argument('image', type=FileStorage, location='files', required=False)
+parserLaporan.add_argument('video', type=FileStorage, location='files', required=False)
+parserLaporan.add_argument('location', type=str, location='form', required=False)
+parserLaporan.add_argument('latitude', type=str, location='form', required=False)
+parserLaporan.add_argument('longitude', type=str, location='form', required=False)
+parserLaporan.add_argument('status', type=str, location='form', required=False)
+
+@api.route('/admin/laporan/edit')
 class Laporan(Resource):
 	@api.expect(parserLaporan)
 	def put(self):
@@ -1497,7 +1804,112 @@ parserLaporan = reqparse.RequestParser()
 parserLaporan.add_argument('Authorization', type=str, location='headers', required=True)
 parserLaporan.add_argument('id', type=int, location='args', required=True)
 
+@api.route('/admin/laporan/delete')
+class Laporan(Resource):
+	@api.expect(parserLaporan)
+	def delete(self):
+		args = parserLaporan.parse_args()
+		bearerAuth = args['Authorization']
+		id = args['id']
+		if args['Authorization'].split(' ') ['0'] != 'Bearer':
+			return {
+				'message': 'Authorization type is not Bearer!'
+			}, 400
+		token = bearerAuth.split(' ')[1]
+		try:
+			payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"], audience=AUDIENCE_MOBILE, issuer=ISSUER)
+			user = db.session.execute(db.select(User).filter_by(id=payload['user_id'])).first()
+			if user is None:
+				return {
+					'message': 'User not found!'
+				}, 404
+			if user[0].role != 'admin':
+				return {
+					'message': 'You are not admin!'
+				}, 401
+			laporan = db.session.execute(db.select(Laporan).filter_by(id=id)).first()
+			if laporan is None:
+				return {
+					'message': 'Laporan not found!'
+				}, 404
+			laporan = laporan[0]
+			db.session.delete(laporan)
+			db.session.commit()
+			return {
+				'message': 'Laporan berhasil dihapus!'
+			}, 200
+		except jwt.ExpiredSignatureError:
+			return {
+				'message': 'Token is expired!'
+			}, 400
+		except jwt.InvalidTokenError:
+			return {
+				'message': 'Invalid Token!'
+			}, 400
+		except Exception as err:
+			return {
+				'message': str(err)
+			}, 500
+
+##### Endpoint GET /laporan without token #####
+
+@api.route('/laporan/get')
+class Laporan(Resource):
+	def get(self):
+		laporan = db.session.execute(db.select(Laporan)).all()
+		if laporan is None:
+			return {
+				'message': 'Laporan not found!'
+			}, 404
+		laporan = laporan[0]
+		laporan = [{
+			'id': laporan.id,
+			'title': laporan.title,
+			'description': laporan.description,
+			'image': laporan.image,
+			'location': laporan.location,
+			'latitude': laporan.latitude,
+			'longitude': laporan.longitude,
+			'status': laporan.status
+		} for laporan in laporan]
+		return {
+			'message': 'Success get laporan!',
+			'data': laporan
+		}, 200
+
+# Endpoint GET /laporan/id without token
+parserLaporan = reqparse.RequestParser()
+parserLaporan.add_argument('id', type=int, location='args', required=True)
+
+@api.route('/laporan/get/id')
+class Laporan(Resource):
+	@api.expect(parserLaporan)
+	def get(self):
+		args = parserLaporan.parse_args()
+		id = args['id']
+		laporan = db.session.execute(db.select(Laporan).filter_by(id=id)).first()
+		if laporan is None:
+			return {
+				'message': 'Laporan not found!'
+			}, 404
+		laporan = laporan[0]
+		laporan = {
+			'id': laporan.id,
+			'title': laporan.title,
+			'description': laporan.description,
+			'image': laporan.image,
+			'location': laporan.location,
+			'latitude': laporan.latitude,
+			'longitude': laporan.longitude,
+			'status': laporan.status
+		}
+		return {
+			'message': 'Success get laporan!',
+			'data': laporan
+		}, 200
+
+
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=port, debug=True, threaded=True)
+    app.run(port=8081, debug=True)

@@ -15,6 +15,8 @@ pyopenssl = "*"
 pyjwt = "*"
 cryptography = "==40.0.2"
 flask-sqlalchemy = "==3.0.3"
+uuid = "*"
+flask-cors = "*"
 
 [dev-packages]
 
